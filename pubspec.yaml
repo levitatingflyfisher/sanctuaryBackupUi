@@ -1,0 +1,45 @@
+name: sanctuary_backup_ui
+description: >-
+  Drop-in encrypted-backup UI (OHBK export/import) for OpenHearth apps, built on
+  sanctuary_auth_core. Generic serializer interface + config + controller + the
+  three settings widgets, made app-agnostic.
+publish_to: 'none'
+version: 0.2.0
+
+environment:
+  # Floor matches sanctuary_auth_core / Lullaby. Lower to '>=3.5.0 <4.0.0' when
+  # the package is ready for external consumers.
+  sdk: '>=3.10.7 <4.0.0'
+  flutter: '>=3.22.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # State — PLAIN flutter_riverpod (no codegen), so consumers spanning codegen
+  # and non-codegen apps can override the throw-by-default providers freely.
+  flutter_riverpod: ^2.6.1
+  # The crypto core (sibling path dep, eloEngine precedent).
+  sanctuary_auth_core:
+    path: ../sanctuary_auth_core
+  # Bytes-only file handling so every consumer's web build stays clean.
+  # Widened to admit file_picker 9.x (StillLife ^9.2.1) and 10.x
+  # (PunctumTemporis ^10.0.0); 8.x still resolves for Lullaby. The package
+  # only calls FilePicker.platform.pickFiles(type, withData) — stable
+  # across all three majors.
+  file_picker: '>=8.0.0 <11.0.0'
+  # Widened from ^10.0.0 to admit 12.x (Trellis and others pin 12.0.2), while
+  # EXCLUDING 13.x whose win32 ^6 conflicts with file_picker's win32 ^5.9 — this
+  # removes the dependency_overrides wart those consumers otherwise need.
+  share_plus: '>=10.0.0 <13.0.0'
+  # Date formatting for the backup filename.
+  intl: ^0.20.2
+  # App-documents directory for the io VaultStore (snapshot vault).
+  path_provider: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
