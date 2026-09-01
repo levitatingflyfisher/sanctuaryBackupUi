@@ -27,6 +27,25 @@ enum RestoreOutcome {
   failed,
 }
 
+/// What [BackupController.snapshotBeforeWipe] achieved.
+enum PreWipeOutcome {
+  /// A verified snapshot of the current data is in the vault. Safe to wipe.
+  taken,
+
+  /// No recovery words on this device, so there is no key to seal a
+  /// snapshot under. Nothing was written. The app decides: offer backup
+  /// setup first, offer the plain export, or wipe with the user's
+  /// explicit consent that there is no way back.
+  noKey,
+
+  /// The snapshot could not be saved or did not read back. Do NOT wipe.
+  failed,
+}
+
+/// Result of [BackupController.snapshotBeforeWipe]: [entry] is set only
+/// when [outcome] is [PreWipeOutcome.taken].
+typedef PreWipeSnapshot = ({PreWipeOutcome outcome, VaultEntry? entry});
+
 /// A decrypted-and-described backup, ready to be committed. Produced by
 /// [BackupController.prepareRestore] / [prepareRestoreWithPhrase]; the UI
 /// shows [manifest] in the preview/confirm dialog, then hands the whole
@@ -93,8 +112,38 @@ class BackupController extends Notifier<AsyncValue<void>> {
   @override
   AsyncValue<void> build() => const AsyncData(null);
 
-  /// Generates a new 12-word seed phrase and returns it for display.
-  /// The phrase is persisted in the OS keychain by sanctuary_auth_core.
+  /// Creates a new 12-word phrase for display WITHOUT storing it. Nothing
+  /// exists on the device until the user consents with [saveSeedPhrase]
+  /// ("I've written this down"); leaving the sheet leaves no key behind.
+  String draftSeedPhrase() =>
+      ref.read(cryptoServiceProvider).generateMnemonic();
+
+  /// Stores a phrase from [draftSeedPhrase] as this device's recovery words,
+  /// once the user has said they wrote it down. Refuses (returns false) when
+  /// words already exist on the device: an existing identity is never
+  /// overwritten here (same guard as `AuthNotifier.generateSeedPhrase`).
+  Future<bool> saveSeedPhrase(String phrase) async {
+    state = const AsyncLoading();
+    try {
+      final store = ref.read(secureKeyStoreProvider);
+      if (await store.readMnemonic() != null) {
+        state = const AsyncData(null);
+        return false;
+      }
+      await store.writeMnemonic(phrase);
+      ref.invalidate(authNotifierProvider);
+      await ref.read(authNotifierProvider.future);
+      state = const AsyncData(null);
+      return true;
+    } catch (e, st) {
+      state = AsyncError(e, st);
+      return false;
+    }
+  }
+
+  /// Generates a new 12-word seed phrase, STORES it, and returns it for
+  /// display. Prefer [draftSeedPhrase] + [saveSeedPhrase], which store only
+  /// on consent; kept for apps that call it directly.
   Future<String?> generateSeedPhrase() async {
     state = const AsyncLoading();
     try {
@@ -282,6 +331,66 @@ class BackupController extends Notifier<AsyncValue<void>> {
     }
   }
 
+  /// The pre-wipe snapshot: call before any app action that deletes the
+  /// user's data outside a restore (typically "Clear all data").
+  ///
+  /// Contract, identical to the snapshot [commitRestore] takes:
+  /// - the current data is exported under this device's key and saved to
+  ///   the vault as [VaultLabel.preRestore] ("Safety snapshot" in Previous
+  ///   backups), auto-pinned — it becomes the one protected rollback,
+  ///   releasing any earlier one;
+  /// - the stored bytes are read back and decrypted before this returns
+  ///   [PreWipeOutcome.taken];
+  /// - the app wipes ONLY on [PreWipeOutcome.taken]. On
+  ///   [PreWipeOutcome.failed] it must not wipe. On [PreWipeOutcome.noKey]
+  ///   see that value's doc.
+  ///
+  /// Rolling back is an ordinary restore of that entry from Previous
+  /// backups (`BackupVaultSheet`), which itself snapshots first.
+  ///
+  /// The wipe itself must leave two things alone, or the snapshot is lost
+  /// or locked: the vault (app documents on native, OPFS on web — delete
+  /// your database rows, not the app's storage directory) and the recovery
+  /// words (do not call `resetIdentity`/`clearAuth` as part of it; without
+  /// them the snapshot opens only with the paper copy).
+  ///
+  /// Reuses [VaultLabel.preRestore] rather than adding a label, because
+  /// apps switch exhaustively on [VaultLabel].
+  Future<PreWipeSnapshot> snapshotBeforeWipe() async {
+    final Uint8List? key;
+    try {
+      key = (await ref.read(authNotifierProvider.future)).masterEncryptionKey;
+    } on Object {
+      return (outcome: PreWipeOutcome.failed, entry: null);
+    }
+    if (key == null) return (outcome: PreWipeOutcome.noKey, entry: null);
+    try {
+      final entry = await _saveVerifiedRollback(key);
+      return (outcome: PreWipeOutcome.taken, entry: entry);
+    } on Object {
+      return (outcome: PreWipeOutcome.failed, entry: null);
+    }
+  }
+
+  /// Exports current data under [key], vaults it as the auto-pinned
+  /// rollback, and proves the stored bytes decrypt under [key]. Throws on
+  /// any failure.
+  Future<VaultEntry> _saveVerifiedRollback(Uint8List key) async {
+    final repo = ref.read(backupRepositoryProvider);
+    final vault = ref.read(backupVaultProvider);
+    final entry =
+        await vault.save(await repo.export(key), label: VaultLabel.preRestore);
+    // "Untested backups don't count" applies doubly to the rollback the
+    // whole promise rests on: re-read the stored bytes and prove they
+    // decrypt under the same key before anything destructive happens.
+    final readBack = await vault.read(entry.id);
+    if (readBack == null) {
+      throw StateError('rollback snapshot vanished on read-back');
+    }
+    await repo.open(readBack, key);
+    return entry;
+  }
+
   /// App-level dry-run parse when the serializer supports it, generic
   /// envelope description otherwise.
   Future<BackupManifest> _describe(Uint8List plaintext) async {
@@ -303,19 +412,7 @@ class BackupController extends Notifier<AsyncValue<void>> {
     state = const AsyncLoading();
 
     try {
-      final snapshot =
-          await ref.read(backupRepositoryProvider).export(prepared.key);
-      final vault = ref.read(backupVaultProvider);
-      final entry =
-          await vault.save(snapshot, label: VaultLabel.preRestore);
-      // "Untested backups don't count" applies doubly to the rollback the
-      // whole promise rests on: re-read the stored bytes and prove they
-      // decrypt under the same key before anything destructive happens.
-      final readBack = await vault.read(entry.id);
-      if (readBack == null) {
-        throw StateError('pre-restore snapshot vanished on read-back');
-      }
-      await ref.read(backupRepositoryProvider).open(readBack, prepared.key);
+      await _saveVerifiedRollback(prepared.key);
     } catch (e, st) {
       state = AsyncError(e, st);
       return RestoreOutcome.snapshotFailed;

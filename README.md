@@ -21,9 +21,48 @@ app-agnostic.
 - **`BackupController`** — seed generate / re-entry confirm, export, restore
   with the typed `RestoreOutcome` enum, and `<appId>-backup-<yyyy-MM-dd>.ohbk`
   filenames.
-- **Widgets** — `BackupSettingsSection` (drop into your settings list),
-  `SeedPhraseModal`, `PhraseEntryDialog`, and the `BackupVaultSheet`
-  ("Previous backups").
+- **Widgets** — `BackupSettingsSection` (drop into your settings list;
+  draws its own heading), `SeedPhraseModal` (the words as a fixed 3x4
+  table), `PhraseReEntryDialog` (word-by-word check), `PhraseEntryDialog`
+  (restore), `BackupSetupReminder` (the "Finish setup" line), and the
+  `BackupVaultSheet` ("Previous backups").
+- **`AppScopedSecureKeyStore`** — per-app key-store names on web, where
+  the fleet PWAs share one origin.
+
+## Migrating from 0.2
+
+Nothing breaks at compile time: every change is additive or keeps its
+signature. What each app should do:
+
+1. **Add `appScopedKeyStoreOverride()`** to the root `ProviderScope`
+   overrides (after the config override). Until you do, your PWA shares
+   recovery words with every other fleet PWA in the same browser. It does
+   nothing on native.
+2. **Delete your own heading above `BackupSettingsSection`** (for
+   example WeatherGlass's `_Label('Backup & Restore')`). The section now
+   draws "Backup" itself, in every state; pass `title:` to change it.
+   Native-tile apps (Sundial, Furrow, WeatherGlass, Hatch) that draw
+   their own tiles should draw their heading inside the same
+   `authNotifierProvider.when(...)` and give `loading`/`error` visible
+   content.
+3. **Call `snapshotBeforeWipe()` before "Clear all data"**, and wipe only
+   on `PreWipeOutcome.taken` (see Restore safety above).
+4. **Show `BackupSetupReminder`** where unfinished setup should be
+   noticed (home or top of settings), per operator ruling 48.
+5. **Tests that drive the old flows** need updating:
+   - setup no longer stores words when the sheet opens. Tap
+     "I've written this down" first; "Not now" stores nothing;
+   - re-entry is word by word (`PhraseReEntryDialog`, button keys
+     `re-entry-next` / `re-entry-back`), and a mismatch no longer shows a
+     snack bar;
+   - the restore dialog's button stays disabled until twelve words are
+     typed, so `pump()` after `enterText`;
+   - the strings "Encrypted Backup", "Reset identity" and
+     "Load data from an .ohbk file" are now "Backup",
+     "Remove recovery words" and "Load data from a backup file".
+   - `BackupSetupReminder` and `backupSetupStatusProvider` read
+     `backupReminderStoreProvider`. Override it with
+     `InMemoryBackupReminderStore` in widget tests.
 
 ### Restore safety & retention (v0.2, BACKUP_RETENTION_SPEC)
 
@@ -35,6 +74,24 @@ app-agnostic.
   data unless a snapshot of the CURRENT data was vaulted first
   (`RestoreOutcome.snapshotFailed`, fail-closed). The snapshot is sealed
   under whichever key performed the restore.
+- **Pre-wipe snapshot** — before any action that deletes the user's
+  data outside a restore ("Clear all data"), call
+  `ref.read(backupControllerProvider.notifier).snapshotBeforeWipe()`.
+  Wipe **only** on `PreWipeOutcome.taken`: the current data is then in
+  Previous backups as the protected "Safety snapshot" (auto-pinned,
+  verified by read-back), and rolling back is an ordinary restore of it.
+  On `failed`, do not wipe. On `noKey` (no recovery words yet) there is
+  nothing to seal it under: offer setup or the plain export first, or
+  wipe only with the user's explicit agreement that there is no way back.
+  The wipe must leave the vault (app documents on native, OPFS on web)
+  and the recovery words in place: delete your data, not the app's
+  storage directory, and do not reset the words as part of it.
+  ```dart
+  final snap = await ref
+      .read(backupControllerProvider.notifier)
+      .snapshotBeforeWipe();
+  if (snap.outcome == PreWipeOutcome.taken) await wipeEverything();
+  ```
 - **Preview-before-restore** — `prepareRestore` decrypts first and shows
   what the backup contains (app, age, per-table counts vs current) before
   the confirm dialog. Wrong-phrase attempts never trigger snapshots.
@@ -130,15 +187,38 @@ ProviderScope(
     // household seed. Leave unset (null) to keep the legacy household-wide
     // derivation used by already-shipped backups.
     sanctuaryAppDomainProvider.overrideWithValue('myapp'),
+    // Web: keep this app's recovery words apart from the other fleet PWAs
+    // on the same origin (see below). A no-op on native.
+    appScopedKeyStoreOverride(),
   ],
   child: const MyApp(),
 );
 ```
 
+**Why `appScopedKeyStoreOverride()`.** Every fleet PWA is served from one
+origin, `levitatingflyfisher.github.io`, and `flutter_secure_storage` on web
+is that origin's localStorage. The default key store uses fixed names
+(`oh_mnemonic_v1`, …), so without the override every fleet PWA in a browser
+shares one set of recovery words, one "confirmed" flag and one "last
+backup" time. "Remove recovery words" in one app removes them in all. The
+override namespaces every entry by `appId` (`oh_<appId>_mnemonic_v1`).
+Existing shared words are carried over only for the app that can prove they
+are its own: a snapshot in its own vault must open under them (apps calling
+`runStartupMaintenance` normally have one). The confirmed flag comes with
+them; the shared backup time does not. The shared entries are never written
+or deleted. An app that cannot prove ownership starts with no words, and the
+user restores with the words on paper, which adopts them. The vault itself
+was already scoped by `appId` on web (`sanctuary_vault_<appId>`).
+
 Both config providers throw a helpful `UnimplementedError` until overridden, so
 a missing override fails loud rather than silently.
 
 ### 3. Drop the section into settings
+
+The section draws its own heading ("Backup" by default, `title:` to
+change it) together with its tiles, so do **not** put an app heading
+above it — the two would stack, and yours would outlive the tiles while
+the backup state loads.
 
 ```dart
 ListView(
@@ -149,7 +229,33 @@ ListView(
 )
 ```
 
+## Finish-setup reminder
+
+Apps open into their task and ask for backup setup when it is needed, but
+unfinished setup must not be forgotten. `backupSetupStatusProvider` gives a
+`BackupSetupStatus` (`hasWords`, `wordsConfirmed`, `setupFinished`,
+`lastBackupAt`, `showReminder(now)`), and `BackupSetupReminder` is a
+ready-made line for a home screen or the top of settings: a sentence plus
+**Set up** and **Dismiss**. It takes no space once setup is finished. A
+dismissal lasts `BackupSetupStatus.reminderSnooze` (30 days), then the
+reminder returns, because a dismissal means "not now", not "never". Dismissals are
+stored per app (`backupReminderStoreProvider`; override it with
+`InMemoryBackupReminderStore` from `testing.dart` in tests).
+
+```dart
+Column(children: [
+  const BackupSetupReminder(),          // or onSetUp: () => context.go('/settings')
+  ...
+])
+```
+
 ## Native-tile apps: call `BackupFlow`
+
+If you draw your own tiles, draw your heading in the same widget, inside
+the same `authNotifierProvider.when(...)`, and give its `loading` and
+`error` branches visible content (a status line; a message with a retry).
+A heading rendered outside that `when` sits over nothing whenever auth is
+not `data`.
 
 `BackupSettingsSection` is a Material `ListView` of tiles. Some apps (Sundial,
 Furrow, WeatherGlass) have their own visual conventions for a settings screen
@@ -179,7 +285,9 @@ class MyRestoreTile extends ConsumerWidget {
 
 | Method | What it does |
 |---|---|
-| `runSeedSetup(context, ref)` | Generate a phrase, show it, require re-entry to confirm |
+| `runSeedSetup(context, ref)` | Show new words; store them only on "I've written this down"; check them word by word |
+| `confirmPhraseReEntry(context, ref)` | Check stored words word by word (finishes an interrupted setup) |
+| `showRecoveryWords(context, ref)` | After a confirm, show the stored words again |
 | `runExport(context, ref)` | Export the encrypted blob to the system share sheet |
 | `runRestore(context, ref)` | Pick an `.ohbk`, confirm, restore (with wrong-phrase fallback) |
 | `runResetIdentity(context, ref)` | Danger-zone: wipe key material (keeps data) |

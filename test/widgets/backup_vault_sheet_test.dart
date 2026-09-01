@@ -109,6 +109,20 @@ void main() {
     expect(find.byIcon(Icons.push_pin), findsOneWidget);
   });
 
+  // The protected rollback is also what snapshotBeforeWipe() leaves, so
+  // its delete warning must not claim it came from a restore.
+  testWidgets('deleting the protected rollback names restore or clear',
+      (tester) async {
+    await _seed(store, label: VaultLabel.preRestore);
+    await open(tester);
+    await tester.tap(find.byIcon(Icons.more_vert).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('most recent restore or clear'),
+        findsOneWidget);
+  });
+
   testWidgets('delete asks first, then removes entry and bytes',
       (tester) async {
     final entry = await _seed(store);

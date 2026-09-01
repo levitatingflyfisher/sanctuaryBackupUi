@@ -173,7 +173,7 @@ class _EntryTile extends ConsumerWidget {
     if (!context.mounted) return;
     if (bytes == null) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text('This snapshot file is missing from the vault.')));
+          content: Text('This snapshot is no longer on this device.')));
       onChanged();
       return;
     }
@@ -188,13 +188,14 @@ class _EntryTile extends ConsumerWidget {
 
   Future<void> _delete(BuildContext context, WidgetRef ref) async {
     // Deleting the auto-pinned rollback deserves its own words: it is the
-    // undo for the most recent restore, not just another snapshot.
+    // undo for the most recent restore or pre-wipe snapshot, not just
+    // another snapshot.
     final consequence = entry.autoPinned
-        ? 'This is the safety snapshot from your most recent restore — '
-            'deleting it removes that undo. Backup files you exported '
-            'elsewhere are not affected.'
-        : 'This removes the snapshot from ${entry.pinned ? 'the vault — '
-            'it is currently pinned' : 'this device'}. Backup files you '
+        ? 'This is the safety snapshot taken before your most recent '
+            'restore or clear — deleting it removes that undo. Backup files '
+            'you exported elsewhere are not affected.'
+        : 'This removes the snapshot from this device'
+            '${entry.pinned ? ' — it is currently pinned' : ''}. Backup files you '
             'exported elsewhere are not affected.';
     final confirmed = await showDialog<bool>(
       context: context,

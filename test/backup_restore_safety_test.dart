@@ -348,6 +348,48 @@ void main() {
     });
   });
 
+  // Every app shipping this section also ships a "Clear all data", and no
+  // wipe took a snapshot (mantle:hackers-04, finding 7). The pre-wipe
+  // snapshot sits beside the pre-restore one: same key, same auto-pin, same
+  // read-back, same fail-closed contract.
+  group('snapshotBeforeWipe', () {
+    test('vaults current data as the protected rollback, verified', () async {
+      final current = _envelopeBytes();
+      final c = makeContainer(serializer: FakeBackupSerializer(current));
+      final result =
+          await c.read(backupControllerProvider.notifier).snapshotBeforeWipe();
+
+      expect(result.outcome, PreWipeOutcome.taken);
+      final entries = await c.read(backupVaultProvider).list();
+      expect(entries.single.id, result.entry!.id);
+      expect(entries.single.label, VaultLabel.preRestore);
+      expect(entries.single.autoPinned, isTrue);
+      final blob = await c.read(backupVaultProvider).read(result.entry!.id);
+      expect(
+          await GhostBackup.import(blob!, _key(), EnvelopeCipher(),
+              context: _aad),
+          current);
+    });
+
+    test('without words on the device -> noKey, nothing written', () async {
+      final c = makeContainer(store: InMemorySecureKeyStore());
+      final result =
+          await c.read(backupControllerProvider.notifier).snapshotBeforeWipe();
+      expect(result.outcome, PreWipeOutcome.noKey);
+      expect(result.entry, isNull);
+      expect(await c.read(backupVaultProvider).list(), isEmpty);
+    });
+
+    test('a vault that cannot save -> failed (the app must not wipe)',
+        () async {
+      final c = makeContainer(vault: _FailingVaultStore());
+      final result =
+          await c.read(backupControllerProvider.notifier).snapshotBeforeWipe();
+      expect(result.outcome, PreWipeOutcome.failed);
+      expect(result.entry, isNull);
+    });
+  });
+
   group('runStartupMaintenance (silent freshness snapshot)', () {
     test('takes a snapshot when the vault is empty and a key exists',
         () async {

@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 import 'backup_config.dart';
 import 'backup_controller.dart';
 import 'widgets/phrase_entry_dialog.dart';
+import 'widgets/phrase_re_entry_dialog.dart';
 import 'widgets/seed_phrase_modal.dart';
 
 /// Reusable backup orchestration — seed setup, export, restore, and identity
@@ -36,60 +37,104 @@ import 'widgets/seed_phrase_modal.dart';
 class BackupFlow {
   const BackupFlow();
 
-  /// Generates a new seed phrase, shows it for the user to write down, then
-  /// requires re-entry to prove the paper copy is correct.
+  /// Shows a new phrase for the user to write down, stores it only when
+  /// they say they have ("I've written this down"), then checks the paper
+  /// copy word by word. "Not now", or swiping the sheet away, stores
+  /// nothing: there is no half-made key to recover from.
   Future<void> runSeedSetup(BuildContext context, WidgetRef ref) async {
-    final phrase =
-        await ref.read(backupControllerProvider.notifier).generateSeedPhrase();
-    if (phrase == null || !context.mounted) return;
+    // Words already on this device are never replaced from here; showing a
+    // fresh set that could not be saved would mislead.
+    if (await ref.read(secureKeyStoreProvider).readMnemonic() != null ||
+        !context.mounted) {
+      return;
+    }
+    final notifier = ref.read(backupControllerProvider.notifier);
+    final phrase = notifier.draftSeedPhrase();
 
-    await showModalBottomSheet(
+    final consented = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
-      // The recovery words must be acknowledged via the button, not
-      // barrier-dismissed or swiped away.
-      isDismissible: false,
-      enableDrag: false,
       builder: (_) => SeedPhraseModal(
         phrase: phrase,
         onAcknowledged: () {},
+        declineLabel: 'Not now',
       ),
     );
+    if (consented != true || !context.mounted) return;
 
-    if (!context.mounted) return;
+    final saved = await notifier.saveSeedPhrase(phrase);
+    if (!saved || !context.mounted) return;
     await confirmPhraseReEntry(context, ref);
   }
 
-  /// Loops the re-entry dialog until the typed words match the generated
-  /// phrase (or the user backs out), converting the "I clicked got it" UX
-  /// assertion into a cryptographic check.
+  /// "Show my recovery words": after a confirm, shows the words stored on
+  /// this device in the seed sheet. For a paper copy that was lost, or that
+  /// the check keeps rejecting because it was copied wrong. The package has
+  /// no device-lock gate of its own, so the confirm is the gate; an app
+  /// with one can put it in front of this call.
+  Future<void> showRecoveryWords(BuildContext context, WidgetRef ref) async {
+    final stored = await ref.read(secureKeyStoreProvider).readMnemonic();
+    if (stored == null || !context.mounted) return;
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        scrollable: true,
+        title: const Text('Show your recovery words?'),
+        content: const Text(
+          'Anyone who sees these words can open your backups. Check that '
+          'no one is looking at your screen.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Show words'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !context.mounted) return;
+    await _showWords(context, stored);
+  }
+
+  /// Checks the user's paper copy word by word ([PhraseReEntryDialog]),
+  /// then records the acknowledgement — converting "I clicked got it" into
+  /// "I can reproduce the phrase". A mismatch is answered inside the dialog,
+  /// naming the word, and nothing typed is thrown away; the user can open
+  /// the words again from the dialog if the paper copy itself is wrong.
   Future<void> confirmPhraseReEntry(
       BuildContext context, WidgetRef ref) async {
-    while (context.mounted) {
-      final reEntry = await PhraseEntryDialog.show(
-        context,
-        title: 'Re-enter your recovery words',
-        body: 'Type the 12 words you just wrote down. This proves your '
-            'paper copy is correct — without it, a typo could cost you all '
-            'your data later.',
-        confirmLabel: 'Confirm',
-      );
-      if (reEntry == null || !context.mounted) return;
+    final stored = await ref.read(secureKeyStoreProvider).readMnemonic();
+    if (stored == null || !context.mounted) return;
 
-      final ok = await ref
-          .read(backupControllerProvider.notifier)
-          .confirmSeedAcknowledged(reEntry);
-      if (!context.mounted) return;
-      if (ok) return;
+    final reEntry = await PhraseReEntryDialog.show(
+      context,
+      expectedPhrase: stored,
+      onShowWords: () => _showWords(context, stored),
+    );
+    if (reEntry == null || !context.mounted) return;
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-              "Words didn't match. Check your paper copy and try again."),
+    // The controller stays the authority: the dialog's per-word check is a
+    // courtesy, the stored phrase comparison is the proof.
+    await ref
+        .read(backupControllerProvider.notifier)
+        .confirmSeedAcknowledged(reEntry);
+  }
+
+  /// Shows [phrase] again in the seed sheet with a plain "Done".
+  Future<void> _showWords(BuildContext context, String phrase) =>
+      showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        builder: (_) => SeedPhraseModal(
+          phrase: phrase,
+          onAcknowledged: () {},
+          acknowledgeLabel: 'Done',
         ),
       );
-    }
-  }
 
   /// Exports an encrypted backup blob (verified by read-back, vault copy
   /// stored) and hands it to the system share sheet, then reports the
@@ -298,7 +343,7 @@ class BackupFlow {
         // survives large text scales (320 dp × 3.0) without a vertical
         // overflow — matching _confirmDestructive and PhraseEntryDialog.
         scrollable: true,
-        title: const Text('Reset identity?'),
+        title: const Text('Remove recovery words from this device?'),
         content: const Text(
           'This will erase your recovery words from this device. '
           'Your data will NOT be deleted, but you won\'t be able to '
@@ -316,7 +361,7 @@ class BackupFlow {
               backgroundColor: Theme.of(context).colorScheme.error,
             ),
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('Reset'),
+            child: const Text('Remove'),
           ),
         ],
       ),

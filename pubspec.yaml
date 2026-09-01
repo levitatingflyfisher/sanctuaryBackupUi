@@ -4,7 +4,7 @@ description: >-
   sanctuary_auth_core. Generic serializer interface + config + controller + the
   three settings widgets, made app-agnostic.
 publish_to: 'none'
-version: 0.2.0
+version: 0.3.0
 
 environment:
   # Floor matches sanctuary_auth_core / Lullaby. Lower to '>=3.5.0 <4.0.0' when
@@ -21,6 +21,9 @@ dependencies:
   # The crypto core (sibling path dep, eloEngine precedent).
   sanctuary_auth_core:
     path: ../sanctuary_auth_core
+  # For AppScopedSecureKeyStore (web namespacing). Same constraint as
+  # sanctuary_auth_core, which already brings it in.
+  flutter_secure_storage: ^9.2.2
   # Bytes-only file handling so every consumer's web build stays clean.
   # Widened to admit file_picker 9.x (StillLife ^9.2.1) and 10.x
   # (PunctumTemporis ^10.0.0); 8.x still resolves for Lullaby. The package

@@ -335,10 +335,177 @@ void main() {
       // Ghost users are asked for the phrase BEFORE the destructive confirm.
       expect(find.text('Enter your 12 recovery words'), findsOneWidget);
       await tester.enterText(find.byType(TextField), _validPhrase);
+      await tester.pump();
       await tester.tap(find.text('Restore'));
       await tester.pumpAndSettle();
 
       expect(find.text('Replace all data?'), findsOneWidget);
+    });
+  });
+
+  group('BackupFlow.confirmPhraseReEntry', () {
+    final words = _validPhrase.split(' ');
+    Finder next() => find.byKey(const ValueKey('re-entry-next'));
+    Future<void> type(WidgetTester tester, String word) async {
+      await tester.enterText(find.byType(TextField), word);
+      await tester.pump();
+      await tester.tap(next());
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('word by word to twelve records the acknowledgement',
+        (tester) async {
+      final store = InMemorySecureKeyStore(mnemonic: _validPhrase);
+      await tester.pumpWidget(_harness(
+        store: store,
+        action: (c, ref) => const BackupFlow().confirmPhraseReEntry(c, ref),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('go'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Word 1 of 12'), findsOneWidget);
+      for (final w in words) {
+        await type(tester, w);
+      }
+      expect(await store.readSeedAcknowledged(), isTrue);
+      expect(find.byType(PhraseReEntryDialog), findsNothing);
+    });
+
+    testWidgets(
+        'a mismatch is answered in the dialog, never by a snack bar that '
+        'throws the typing away', (tester) async {
+      final store = InMemorySecureKeyStore(mnemonic: _validPhrase);
+      await tester.pumpWidget(_harness(
+        store: store,
+        action: (c, ref) => const BackupFlow().confirmPhraseReEntry(c, ref),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('go'));
+      await tester.pumpAndSettle();
+
+      await type(tester, words[0]);
+      await type(tester, 'zoo');
+      expect(find.byType(SnackBar), findsNothing);
+      expect(find.text('Word 2 of 12'), findsOneWidget);
+      expect(find.textContaining('word 2'), findsOneWidget);
+      expect(await store.readSeedAcknowledged(), isFalse);
+    });
+
+    testWidgets('"Show the words again" opens the sheet over the dialog',
+        (tester) async {
+      final store = InMemorySecureKeyStore(mnemonic: _validPhrase);
+      await tester.pumpWidget(_harness(
+        store: store,
+        action: (c, ref) => const BackupFlow().confirmPhraseReEntry(c, ref),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('go'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Show the words again'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SeedPhraseModal), findsOneWidget);
+      await tester.ensureVisible(find.text('Done'));
+      await tester.tap(find.text('Done'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SeedPhraseModal), findsNothing);
+      expect(find.text('Word 1 of 12'), findsOneWidget);
+    });
+  });
+
+  // The phrase used to be generated AND persisted the moment "Set up" was
+  // tapped, before the user had seen it, so leaving the sheet left a key
+  // nobody had written down, and the words could not be seen again
+  // (lullaby:humane-06, reckon:mind-in-mind-07). Now nothing is stored until
+  // the user says the words are written down, and they can be shown again.
+  group('BackupFlow.runSeedSetup consent', () {
+    Future<void> open(WidgetTester tester, SecureKeyStore store) async {
+      await tester.pumpWidget(_harness(
+        store: store,
+        action: (c, ref) => const BackupFlow().runSeedSetup(c, ref),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('go'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('showing the words stores nothing', (tester) async {
+      final store = InMemorySecureKeyStore();
+      await open(tester, store);
+      expect(find.byType(SeedPhraseModal), findsOneWidget);
+      expect(await store.readMnemonic(), isNull);
+    });
+
+    testWidgets('"Not now" leaves no key behind', (tester) async {
+      final store = InMemorySecureKeyStore();
+      await open(tester, store);
+      await tester.ensureVisible(find.text('Not now'));
+      await tester.tap(find.text('Not now'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SeedPhraseModal), findsNothing);
+      expect(find.byType(PhraseReEntryDialog), findsNothing);
+      expect(await store.readMnemonic(), isNull);
+    });
+
+    testWidgets('"I\'ve written this down" stores the words, then checks them',
+        (tester) async {
+      final store = InMemorySecureKeyStore();
+      await open(tester, store);
+      await tester.ensureVisible(find.text("I've written this down"));
+      await tester.tap(find.text("I've written this down"));
+      await tester.pumpAndSettle();
+      expect(await store.readMnemonic(), _validPhrase);
+      expect(await store.readSeedAcknowledged(), isFalse);
+      expect(find.byType(PhraseReEntryDialog), findsOneWidget);
+    });
+
+    testWidgets('never overwrites words already on the device',
+        (tester) async {
+      const existing = 'zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong';
+      final store = InMemorySecureKeyStore(mnemonic: existing);
+      await open(tester, store);
+      if (find.text("I've written this down").evaluate().isNotEmpty) {
+        await tester.ensureVisible(find.text("I've written this down"));
+        await tester.tap(find.text("I've written this down"));
+        await tester.pumpAndSettle();
+      }
+      expect(await store.readMnemonic(), existing);
+    });
+  });
+
+  group('BackupFlow.showRecoveryWords', () {
+    testWidgets('asks first, then shows the stored words', (tester) async {
+      final store =
+          InMemorySecureKeyStore(mnemonic: _validPhrase, acknowledged: true);
+      await tester.pumpWidget(_harness(
+        store: store,
+        action: (c, ref) => const BackupFlow().showRecoveryWords(c, ref),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('go'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(SeedPhraseModal), findsNothing);
+      expect(find.text('Show your recovery words?'), findsOneWidget);
+      await tester.tap(find.text('Show words'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SeedPhraseModal), findsOneWidget);
+      expect(find.text('about'), findsOneWidget);
+    });
+
+    testWidgets('Cancel shows nothing', (tester) async {
+      final store = InMemorySecureKeyStore(mnemonic: _validPhrase);
+      await tester.pumpWidget(_harness(
+        store: store,
+        action: (c, ref) => const BackupFlow().showRecoveryWords(c, ref),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('go'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+      expect(find.byType(SeedPhraseModal), findsNothing);
     });
   });
 }

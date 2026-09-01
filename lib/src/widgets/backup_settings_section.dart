@@ -16,8 +16,17 @@ import 'backup_vault_sheet.dart';
 /// This is a thin Material shell over [BackupFlow]. Apps whose visual
 /// conventions clash with this Material list should build their own tiles and
 /// call [BackupFlow] directly — see the README's "native-tile apps" section.
+///
+/// The heading is part of this widget, so it can never outlive its tiles:
+/// while the device's backup state loads it shows a status line, and if the
+/// read fails it says so with a Try again button. Apps should not put their
+/// own heading above it.
 class BackupSettingsSection extends ConsumerWidget {
-  const BackupSettingsSection({super.key});
+  const BackupSettingsSection({super.key, this.title = 'Backup'});
+
+  /// The section heading, painted in the theme's neutral text colour like
+  /// any other settings heading.
+  final String title;
 
   static const _flow = BackupFlow();
 
@@ -27,9 +36,51 @@ class BackupSettingsSection extends ConsumerWidget {
     final backupState = ref.watch(backupControllerProvider);
     final isLoading = backupState is AsyncLoading;
 
+    final theme = Theme.of(context);
+    final header = [
+      const Divider(),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Semantics(
+          header: true,
+          child: Text(title, style: theme.textTheme.titleSmall),
+        ),
+      ),
+    ];
+
     return authAsync.when(
-      loading: () => const SizedBox.shrink(),
-      error: (e, _) => const SizedBox.shrink(),
+      loading: () => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ...header,
+          const ListTile(
+            leading: SizedBox.square(
+              dimension: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            title: Text('Checking backup status…'),
+          ),
+        ],
+      ),
+      error: (e, _) => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ...header,
+          ListTile(
+            leading: Icon(Icons.error_outline, color: theme.colorScheme.error),
+            title: const Text("Couldn't read your backup settings on this "
+                'device.'),
+            subtitle: const Text('Your data is not affected.'),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: OutlinedButton(
+              onPressed: () => ref.invalidate(authNotifierProvider),
+              child: const Text('Try again'),
+            ),
+          ),
+        ],
+      ),
       data: (authState) {
         final hasKey = authState.masterEncryptionKey != null;
         final seedAcked = authState.seedAcknowledged;
@@ -37,16 +88,7 @@ class BackupSettingsSection extends ConsumerWidget {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Divider(),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(
-                'Encrypted Backup',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-              ),
-            ),
+            ...header,
 
             // Set up seed phrase (only if no key yet)
             if (!hasKey)
@@ -75,6 +117,18 @@ class BackupSettingsSection extends ConsumerWidget {
                 onTap: () => _flow.confirmPhraseReEntry(context, ref),
               ),
 
+            // The words stored on this device, shown again behind a confirm:
+            // a mistranscribed paper copy otherwise loops forever at the
+            // re-entry check (reckon:mind-in-mind-07).
+            if (hasKey)
+              ListTile(
+                leading: const Icon(Icons.visibility_outlined),
+                title: const Text('Show my recovery words'),
+                subtitle: const Text('To check or replace your paper copy'),
+                enabled: !isLoading,
+                onTap: () => _flow.showRecoveryWords(context, ref),
+              ),
+
             // Export (available after seed acknowledged)
             if (hasKey && seedAcked)
               ListTile(
@@ -92,7 +146,7 @@ class BackupSettingsSection extends ConsumerWidget {
             ListTile(
               leading: const Icon(Icons.download),
               title: const Text('Restore from backup'),
-              subtitle: const Text('Load data from an .ohbk file'),
+              subtitle: const Text('Load data from a backup file'),
               enabled: !isLoading,
               onTap: () => _flow.runRestore(context, ref),
             ),
@@ -123,10 +177,10 @@ class BackupSettingsSection extends ConsumerWidget {
               ListTile(
                 leading: Icon(Icons.delete_forever,
                     color: Theme.of(context).colorScheme.error),
-                title: Text('Reset identity',
+                title: Text('Remove recovery words',
                     style: TextStyle(
                         color: Theme.of(context).colorScheme.error)),
-                subtitle: const Text('Wipes recovery words (keeps your data)'),
+                subtitle: const Text('From this device only. Your data stays.'),
                 enabled: !isLoading,
                 onTap: () => _flow.runResetIdentity(context, ref),
               ),

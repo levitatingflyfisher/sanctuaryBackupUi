@@ -38,28 +38,33 @@ void main() {
         'abandon abandon abandon abandon abandon abandon abandon abandon '
         'abandon abandon abandon about';
     await tester.enterText(find.byType(TextField), phrase);
+    await tester.pump();
     await tester.tap(find.widgetWithText(FilledButton, 'Restore'));
     await tester.pumpAndSettle();
 
     expect(result, phrase);
   });
 
-  testWidgets('shows an error and stays open for the wrong word count',
+  // The count used to be checked only on Confirm, as an errorText that
+  // clipped to "Please enter exactly 12 w…" at 360 dp x 1.3
+  // (furrow:design-of-everyday-things-05). Count as they type instead, and
+  // hold Confirm until the count reads twelve: nothing left to reject.
+  testWidgets('counts words as they are typed; Confirm waits for twelve',
       (tester) async {
-    String? result;
     var called = false;
-    await _pumpLauncher(tester, onResult: (r) {
-      called = true;
-      result = r;
-    });
+    await _pumpLauncher(tester, onResult: (_) => called = true);
+
+    FilledButton confirm() =>
+        tester.widget(find.widgetWithText(FilledButton, 'Restore'));
+    expect(find.text('0 of 12 words'), findsOneWidget);
+    expect(confirm().onPressed, isNull);
 
     await tester.enterText(find.byType(TextField), 'only three words');
-    await tester.tap(find.widgetWithText(FilledButton, 'Restore'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Please enter exactly 12 words'), findsOneWidget);
-    expect(called, isFalse); // dialog did not pop
-    expect(result, isNull);
+    await tester.pump();
+    expect(find.text('3 of 12 words'), findsOneWidget);
+    expect(confirm().onPressed, isNull);
+    expect(called, isFalse);
+    expect(find.textContaining('Please enter exactly'), findsNothing);
   });
 
   testWidgets('no overflow at 320 dp x 3.0 text scale', (tester) async {

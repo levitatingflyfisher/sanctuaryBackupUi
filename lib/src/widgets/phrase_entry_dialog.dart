@@ -46,7 +46,13 @@ class PhraseEntryDialog extends StatefulWidget {
 
 class _PhraseEntryDialogState extends State<PhraseEntryDialog> {
   final _controller = TextEditingController();
-  String? _error;
+
+  static const _wordCount = 12;
+
+  int get _typedWords {
+    final text = _controller.text.trim();
+    return text.isEmpty ? 0 : text.split(RegExp(r'\s+')).length;
+  }
 
   @override
   void dispose() {
@@ -69,14 +75,25 @@ class _PhraseEntryDialogState extends State<PhraseEntryDialog> {
           TextField(
             controller: _controller,
             maxLines: 3,
-            decoration: InputDecoration(
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: const InputDecoration(
               hintText: 'word1 word2 word3 ...',
-              border: const OutlineInputBorder(),
-              errorText: _error,
+              border: OutlineInputBorder(),
             ),
-            onChanged: (_) {
-              if (_error != null) setState(() => _error = null);
-            },
+            // Count as they type, so Confirm is simply held until the count
+            // reads twelve — there is no after-the-fact rejection to show.
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: Text(
+              '$_typedWords of $_wordCount words',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
           ),
         ],
       ),
@@ -86,15 +103,9 @@ class _PhraseEntryDialogState extends State<PhraseEntryDialog> {
           child: const Text('Cancel'),
         ),
         FilledButton(
-          onPressed: () {
-            final phrase = _controller.text.trim();
-            final wordCount = phrase.split(RegExp(r'\s+')).length;
-            if (wordCount != 12) {
-              setState(() => _error = 'Please enter exactly 12 words');
-              return;
-            }
-            Navigator.pop(context, phrase);
-          },
+          onPressed: _typedWords == _wordCount
+              ? () => Navigator.pop(context, _controller.text.trim())
+              : null,
           child: Text(widget.confirmLabel),
         ),
       ],

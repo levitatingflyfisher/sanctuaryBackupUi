@@ -13,7 +13,9 @@ import 'dart:typed_data';
 
 import 'package:sanctuary_auth_core/sanctuary_auth_core.dart';
 
+import 'src/app_scoped_key_store.dart';
 import 'src/backup_serializer.dart';
+import 'src/backup_setup_status.dart';
 import 'src/backup_vault.dart';
 import 'src/file_vault_store.dart';
 
@@ -185,4 +187,37 @@ class FakeBackupSerializer implements BackupSerializer {
 
   @override
   Future<void> restoreAll(Uint8List plaintext) async => restored = plaintext;
+}
+
+/// An in-memory [SecretStorage] for [AppScopedSecureKeyStore] tests. [values]
+/// is the raw key-value map, so tests can seed the old shared names and
+/// check what was written.
+class InMemorySecretStorage implements SecretStorage {
+  InMemorySecretStorage([Map<String, String>? initial])
+      : values = {...?initial};
+
+  final Map<String, String> values;
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async => values[key] = value;
+
+  @override
+  Future<void> delete(String key) async => values.remove(key);
+}
+
+/// An in-memory [BackupReminderStore]; seed [dismissedAt] to simulate an
+/// earlier dismissal.
+class InMemoryBackupReminderStore implements BackupReminderStore {
+  InMemoryBackupReminderStore([this.dismissedAt]);
+
+  DateTime? dismissedAt;
+
+  @override
+  Future<DateTime?> readDismissedAt() async => dismissedAt;
+
+  @override
+  Future<void> writeDismissedAt(DateTime at) async => dismissedAt = at;
 }
